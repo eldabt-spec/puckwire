@@ -1,0 +1,5 @@
+.streamlit/secrets.toml
+.env
+__pycache__/
+# Collected data lives on the `data` branch (written by GitHub Actions), never on main.
+data/
