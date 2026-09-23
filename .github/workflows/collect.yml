@@ -52,7 +52,7 @@ jobs:
           DATA_DIR: data
           NEWS_RETENTION_DAYS: "3"
           ESPN_LEAGUE_ID: ${{ secrets.ESPN_LEAGUE_ID }}
-          ESPN_TEAM_ID: ${{ secrets.ESPN_TEAM_ID }}
+          ESPN_TEAM_ID: "1"
           ESPN_S2: ${{ secrets.ESPN_S2 }}
           ESPN_SWID: ${{ secrets.ESPN_SWID }}
           ESPN_SEASON: "2027"
