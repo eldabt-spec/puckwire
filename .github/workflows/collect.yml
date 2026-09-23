@@ -2,8 +2,9 @@ name: collect
 
 on:
   schedule:
-    # Every 10 min, roughly 7am to 1am Toronto time (cron is UTC). Public repos get unlimited minutes.
-    - cron: "*/10 11-23,0-5 * * *"
+    # Hourly. News and starting goalies are pulled live by the site itself;
+    # this job only refreshes slow-moving data: your ESPN roster, line combos, NHL player index.
+    - cron: "17 * * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -18,8 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -33,36 +34,21 @@ jobs:
             git archive FETCH_HEAD | tar -x -C data
           fi
 
-      - name: Pick jobs for this run
-        id: pick
-        run: |
-          jobs="news goalies"
-          min=$(date -u +%M); hour=$(date -u +%H)
-          # First run of each hour: refresh line combos and your ESPN roster.
-          if [ "$min" -lt 10 ]; then jobs="lines espn $jobs"; fi
-          # First run of the day, a manual run, or no player index yet: do everything.
-          if { [ "$hour" = "11" ] && [ "$min" -lt 10 ]; } || [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ ! -f data/nhl_players.json ]; then
-            jobs="all"
-          fi
-          echo "jobs=$jobs" >> "$GITHUB_OUTPUT"
-
-      - name: Collect (also purges old news and past goalie starts)
-        run: python collector/collect.py ${{ steps.pick.outputs.jobs }}
+      - name: Collect roster, lines and player index
+        run: python collector/collect.py players lines espn
         env:
           DATA_DIR: data
-          NEWS_RETENTION_DAYS: "3"
           ESPN_LEAGUE_ID: ${{ secrets.ESPN_LEAGUE_ID }}
           ESPN_TEAM_ID: "1"
           ESPN_S2: ${{ secrets.ESPN_S2 }}
           ESPN_SWID: ${{ secrets.ESPN_SWID }}
           ESPN_SEASON: "2027"
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          AI_TAKES_PER_DAY: "10"
 
       - name: Replace the data branch with one fresh commit (history never grows)
         if: always()
         run: |
           cd data
+          rm -f news_items.json goalie_starts.json   # the site pulls these live now
           [ -n "$(ls -A)" ] || exit 0
           git init -q -b data
           git config user.name "puckwire-bot"

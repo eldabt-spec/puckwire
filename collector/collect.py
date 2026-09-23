@@ -42,6 +42,7 @@ DATA = Path(os.environ.get("DATA_DIR") or ROOT / "data")
 ROTOWIRE_RSS = "https://www.rotowire.com/rss/news.php?sport=NHL"
 CBS_PAGE_1 = "https://www.cbssports.com/fantasy/hockey/players/news/all/"
 CBS_PAGE_N = "https://www.cbssports.com/fantasy/hockey/players/news/all/both/content/xhr/?page={n}"
+DF_NEWS = "https://www.dailyfaceoff.com/hockey-player-news"
 DF_GOALIES = "https://www.dailyfaceoff.com/starting-goalies/{date}"
 DF_LINES = "https://www.dailyfaceoff.com/teams/{slug}/line-combinations"
 NHL_STANDINGS = "https://api-web.nhle.com/v1/standings/now"
@@ -92,9 +93,9 @@ def next_data(page_html: str) -> dict:
 
 
 CATEGORY_RULES = [
-    ("Injury", r"\b(injur|out for|day-to-day|week-to-week|upper[- ]body|lower[- ]body|surgery|IR\b|LTIR|concussion|sidelined|non-contact|illness|questionable|doubtful|return(s|ed)? to (practice|the lineup))"),
+    ("Injury", r"\b(injur|out for|day-to-day|week-to-week|upper[- ]body|lower[- ]body|surgery|IR\b|LTIR|concussion|sidelined|non-contact|illness|questionable|doubtful|return(s|ed)? to (practice|the lineup)|miss(es|ed)? practice|absent from)"),
     ("Transaction", r"\b(waivers|waiver wire|signed|signs|contract|traded|trade|acquired|recalled|loaned|assigned|claimed|released|activated|extension|PTO|buyout|sent down|reassigned)\b"),
-    ("Recap", r"\b(scored|halted|stopped|turned aside|made \d+ saves|notched|tallied|recorded|picked up|posted|registered|dished)\b.*\b(win|loss|victory|defeat|game|contest)\b"),
+    ("Recap", r"\b(stopped|saved|allowed|turned aside|made \d+ saves)\b.*\bshots?\b|\b(scored|halted|stopped|turned aside|made \d+ saves|notched|tallied|recorded|picked up|posted|registered|dished)\b.*\b(win|loss|victory|defeat|game|contest)\b"),
     ("Goalie start", r"\b(start|starts|starting|the nod|crease|net|blue paint|between the pipes|in goal)\b"),  # goalies only
     ("Lineup", r"\b(line|pairing|power play|PP1|PP2|top six|bottom six|healthy scratch|scratched|lineup|centering)\b"),
 ]
@@ -188,6 +189,70 @@ def fetch_cbs(pages: int = 2) -> list[dict]:
             items += _parse_cbs(frag)
         except Exception as e:  # paging is a bonus; page 1 is enough to keep up
             print(f"cbs page {n} skipped: {e}", file=sys.stderr)
+    return items
+
+
+DF_CATEGORIES = {
+    "Injury": "Injury", "Suspension": "Suspension", "Line Change": "Lineup", "Lineup": "Lineup",
+    "Signing": "Transaction", "Trade": "Transaction", "Roster Move": "Transaction",
+    "Waiver Move": "Transaction", "Waivers": "Transaction",
+}
+
+
+def fetch_dailyfaceoff() -> list[dict]:
+    """Daily Faceoff's own news desk: structured JSON, ~20 latest notes."""
+    rows = (next_data(get(DF_NEWS).text).get("data") or {}).get("data") or []
+    items = []
+    for x in rows:
+        headline = (x.get("details") or "").strip()
+        if not x.get("playerName") or not headline:
+            continue
+        pos = (x.get("playerPosition") or "").replace("LW", "L").replace("RW", "R")
+        items.append({
+            "id": item_id(x["playerName"], headline),
+            "player_name": x["playerName"],
+            "headline": headline,
+            "news": (x.get("fantasyDetails") or "").strip(),
+            "analysis": "",
+            "source": "Daily Faceoff" + (f" via {x['sourceName']}" if x.get("sourceName") else ""),
+            "url": x.get("sourceUrl") or DF_NEWS,
+            "published_at": x.get("createdAt") or now_utc().isoformat(),
+            "time_exact": True,
+            "team": x.get("teamAbbreviation"),
+            "position": pos or None,
+            "headshot_fallback": x.get("playerHeadshotUrl"),
+            "df_category": DF_CATEGORIES.get(x.get("newsCategoryName") or ""),
+        })
+    return items
+
+
+def fetch_all_news(nhl_index: dict[str, dict]) -> list[dict]:
+    """Fetch every news source in parallel, merge duplicates, enrich and tag.
+    Used live by the app and by the `news` job. nhl_index maps name_key -> player."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    fetched: list[dict] = []
+    with ThreadPoolExecutor(3) as pool:
+        futures = {pool.submit(fn): fn.__name__ for fn in (fetch_rotowire, fetch_cbs, fetch_dailyfaceoff)}
+        for fut, name in futures.items():
+            try:
+                fetched += fut.result()
+            except Exception as e:  # one source down shouldn't blank the page
+                print(f"{name} failed: {e}", file=sys.stderr)
+    by_id: dict[str, dict] = {}
+    for it in fetched:
+        by_id[it["id"]] = merge(it, by_id.get(it["id"]))
+    items = list(by_id.values())
+    for it in items:
+        p = nhl_index.get(norm(it["player_name"]))
+        it["name_key"] = norm(it["player_name"])
+        it["nhl_id"] = p["nhl_id"] if p else None
+        it["team"] = (p or {}).get("team") or it.get("team")
+        it["position"] = (p or {}).get("position") or it.get("position")
+        it["headshot"] = (p or {}).get("headshot") or it.get("headshot_fallback")
+        it.pop("headshot_fallback", None)
+        it["category"] = it.pop("df_category", None) or categorize(f"{it['headline']} {it['news']}", it.get("position"))
+    items.sort(key=lambda r: r["published_at"], reverse=True)
     return items
 
 
@@ -313,20 +378,6 @@ class Store:
 
 # ---------------------------------------------------------------- jobs
 
-def enrich(items: list[dict], store: Store) -> None:
-    keys = list({norm(i["player_name"]) for i in items})
-    index = {p["name_key"]: p for p in store.select("nhl_players", "name_key", keys)}
-    for it in items:
-        p = index.get(norm(it["player_name"]))
-        it["name_key"] = norm(it["player_name"])
-        it["nhl_id"] = p["nhl_id"] if p else None
-        it["team"] = (p or {}).get("team") or it.get("team")
-        it["position"] = (p or {}).get("position") or it.get("position")
-        it["headshot"] = (p or {}).get("headshot") or it.pop("headshot_fallback", None)
-        it.pop("headshot_fallback", None)
-        it["category"] = categorize(f"{it['headline']} {it['news']}", it.get("position"))
-
-
 def merge(new: dict, old: dict | None) -> dict:
     """Keep the earliest exact timestamp and the fullest text across sources."""
     if not old:
@@ -345,18 +396,9 @@ def merge(new: dict, old: dict | None) -> dict:
 
 
 def job_news(store: Store) -> int:
-    fetched = []
-    for fn in (fetch_rotowire, fetch_cbs):
-        try:
-            fetched += fn()
-        except Exception as e:
-            print(f"{fn.__name__} failed: {e}", file=sys.stderr)
-    by_id: dict[str, dict] = {}
-    for it in fetched:  # collapse RSS + CBS duplicates within this run
-        by_id[it["id"]] = merge(it, by_id.get(it["id"]))
-    items = list(by_id.values())
-    enrich(items, store)
-    existing = {r["id"]: r for r in store.select("news_items", "id", list(by_id))}
+    index = {p["name_key"]: p for p in store.select("nhl_players")}
+    items = fetch_all_news(index)
+    existing = {r["id"]: r for r in store.select("news_items", "id", [i["id"] for i in items])}
     rows = [merge(it, existing.get(it["id"])) for it in items]
     add_ai_takes(rows, existing, store)
     store.upsert("news_items", rows, "id")

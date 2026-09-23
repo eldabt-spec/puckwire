@@ -15,6 +15,10 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import streamlit as st
+import sys
+
+sys.path.insert(0, str(Path(__file__).parent / "collector"))
+import collect  # noqa: E402  (shared fetchers: news and goalies are pulled live)
 
 ET = ZoneInfo("America/Toronto")
 LOCAL = Path(__file__).parent / "data"
@@ -24,6 +28,7 @@ st.set_page_config(page_title="Puckwire", page_icon="🏒", layout="wide")
 # Rink palette: ice surface, boards, the red line, the blue line, the crease.
 CATEGORY_COLORS = {
     "Injury": "#C8102E",        # red line
+    "Suspension": "#8E0C22",
     "Transaction": "#0B5CAD",   # blue line
     "Goalie start": "#6FA8DC",  # crease
     "Lineup": "#2F7D5B",
@@ -110,8 +115,30 @@ def load(table: str) -> list[dict]:
     return r.json()
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def nhl_index() -> dict[str, dict]:
+    return {p["name_key"]: p for p in load("nhl_players")}
+
+
+@st.cache_data(ttl=300, show_spinner="Pulling the latest notes...")
+def live_news() -> tuple[list[dict], str]:
+    """Fetched straight from RotoWire, CBS and Daily Faceoff when you open the page,
+    then cached for 5 minutes. Keeps only the last 3 days."""
+    cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=3)).isoformat()
+    items = [i for i in collect.fetch_all_news(nhl_index()) if i["published_at"] >= cutoff]
+    return items, dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def live_goalies() -> list[dict]:
+    try:
+        return collect.fetch_goalies()
+    except Exception:
+        return []
+
+
 def player_history(name_key: str) -> list[dict]:
-    return [r for r in load("news_items") if r["name_key"] == name_key]
+    return [r for r in live_news()[0] if r["name_key"] == name_key]
 
 
 def ago(ts: str) -> str:
@@ -166,17 +193,21 @@ def card(n: dict, mine: set[str]) -> str:
 
 # ---------------------------------------------------------------- page
 
-news = sorted(load("news_items"), key=lambda n: n["published_at"], reverse=True)
+news, fetched_at = live_news()
 roster = load("my_roster")
 mine = {r["name_key"] for r in roster}
-demo = not has_secrets()
 
-latest = ago(news[0]["published_at"]) if news else "no notes yet"
-st.markdown(
-    f'<div class="masthead"><div class="brand">Puckwire</div><span>Latest note {latest}'
-    f'{"  |  preview data" if demo else ""}</span></div>',
+latest = ago(news[0]["published_at"]) if news else "none yet"
+head_l, head_r = st.columns([5, 1])
+head_l.markdown(
+    f'<div class="masthead"><div class="brand">Puckwire</div><span>Checked {ago(fetched_at)}'
+    f'  |  newest note {latest}</span></div>',
     unsafe_allow_html=True,
 )
+if head_r.button("Refresh", use_container_width=True):
+    live_news.clear()
+    live_goalies.clear()
+    st.rerun()
 
 player_key = st.query_params.get("player")
 if player_key:
@@ -200,7 +231,7 @@ with st.sidebar:
     team_pick = st.multiselect("Team", teams, placeholder="All teams")
     pos_pick = st.multiselect("Position", ["C", "L", "R", "D", "G"], placeholder="All positions")
     query = st.text_input("Search players or text")
-    st.caption("Notes via RotoWire (RSS and CBS Sports). Goalies and lines via Daily Faceoff. For personal use.")
+    st.caption("Notes via RotoWire, CBS Sports and Daily Faceoff, pulled live. Goalies and lines via Daily Faceoff. For personal use.")
 
 tab_news, tab_goalies, tab_lines, tab_roster = st.tabs(["News", "Starting goalies", "Lines", "My roster"])
 
@@ -227,7 +258,7 @@ with tab_news:
 
 with tab_goalies:
     today_iso = dt.datetime.now(ET).date().isoformat()
-    goalies = [g for g in load("goalie_starts") if g["game_date"] >= today_iso]
+    goalies = [g for g in live_goalies() if g["game_date"] >= today_iso]
     dates = sorted({g["game_date"] for g in goalies})
     if not dates:
         st.info("No starters posted yet. Daily Faceoff fills these in on game days, usually by the morning skate.")

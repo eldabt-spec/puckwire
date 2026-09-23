@@ -6,14 +6,9 @@ No database. Everything runs from one private GitHub repo plus a free Streamlit 
 
 ## How it works
 
-Every 20 minutes (7am to 1am Toronto time), a GitHub Action does four things:
+**News and starting goalies are pulled live.** When you open the page (or click Refresh), the site fetches the latest notes from RotoWire, CBS Sports and Daily Faceoff's own news desk, merges duplicates, and shows the last 3 days. Results are cached for 5 minutes. There's no scheduler in the way, so the page is always as fresh as the sources.
 
-- It fetches new notes from RotoWire and CBS Sports, and starting goalies from Daily Faceoff.
-- Once an hour, it also refreshes line combinations and your ESPN roster.
-- It deletes news older than 3 days and goalie starts from past days.
-- It saves what's left as a few small JSON files on a branch called `data`.
-
-The `data` branch is wiped and replaced with a single commit on every run. The repo never builds up history, so it stays under 1 MB. The Streamlit app reads those files and shows the page.
+**Slow-moving data comes from an hourly GitHub Action:** your ESPN roster, line combinations, and the NHL player index (teams, positions, headshots). It saves them as a few small JSON files on the `data` branch. That branch is wiped and replaced with a single commit each run, so the repo never grows. GitHub sometimes delays scheduled runs, which doesn't matter for hourly data.
 
 ## Setup
 
