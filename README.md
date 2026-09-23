@@ -8,7 +8,7 @@ No database. Everything runs from one private GitHub repo plus a free Streamlit 
 
 **News and starting goalies are pulled live.** When you open the page (or click Refresh), the site fetches the latest notes from RotoWire, CBS Sports and Daily Faceoff's own news desk, merges duplicates, and shows the last 3 days. Results are cached for 5 minutes. There's no scheduler in the way, so the page is always as fresh as the sources.
 
-**Slow-moving data comes from an hourly GitHub Action:** your ESPN roster, line combinations, and the NHL player index (teams, positions, headshots). It saves them as a few small JSON files on the `data` branch. That branch is wiped and replaced with a single commit each run, so the repo never grows. GitHub sometimes delays scheduled runs, which doesn't matter for hourly data.
+**Slow-moving data comes from an hourly GitHub Action:** your ESPN roster, the latest note on file for each of your players (from Daily Faceoff, however old; My Roster shows it until a newer note arrives), line combinations, and the NHL player index (teams, positions, headshots). It saves them as a few small JSON files on the `data` branch. That branch is wiped and replaced with a single commit each run, so the repo never grows. GitHub sometimes delays scheduled runs, which doesn't matter for hourly data.
 
 ## Setup
 

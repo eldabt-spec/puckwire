@@ -138,7 +138,9 @@ def live_goalies() -> list[dict]:
 
 
 def player_history(name_key: str) -> list[dict]:
-    return [r for r in live_news()[0] if r["name_key"] == name_key]
+    rows = [r for r in live_news()[0] if r["name_key"] == name_key]
+    older = [r for r in load("roster_notes") if r["name_key"] == name_key and r["id"] not in {x["id"] for x in rows}]
+    return rows + older
 
 
 def ago(ts: str) -> str:
@@ -310,18 +312,17 @@ with tab_lines:
 
 with tab_roster:
     if not roster:
-        st.info("Add ESPN_LEAGUE_ID and ESPN_TEAM_ID to the collector's secrets to sync your roster.")
+        st.info("Add ESPN_LEAGUE_ID and ESPN_TEAM_ID to the repo secrets to sync your roster.")
     else:
-        latest_by_player = {}
-        for n in news:
-            latest_by_player.setdefault(n["name_key"], n)
-        cards = []
-        for r in sorted(roster, key=lambda r: r["name"]):
-            n = latest_by_player.get(r["name_key"])
-            status = (r.get("injury_status") or "").replace("_", " ").title()
-            flag = f' <span class="inj">{e(status)}</span>' if status and status != "Active" else ""
-            note = f'{e(n["headline"])} <span class="meta">{ago(n["published_at"])}</span>' if n else '<span class="meta">No recent notes</span>'
-            cards.append(
-                f'<div class="unit"><a class="gname" href="?player={e(r["name_key"])}" target="_self">{e(r["name"])}</a> '
-                f'<span class="team">{e(r.get("position"))} {e(r.get("pro_team"))}</span>{flag}<br>{note}</div>')
-        st.markdown("".join(cards), unsafe_allow_html=True)
+        # Newest note per player: today's live feed if it has one, otherwise the most
+        # recent note on file from Daily Faceoff (refreshed hourly), however old.
+        latest: dict[str, dict] = {}
+        for n in load("roster_notes") + news:
+            k = n["name_key"]
+            if k in mine and (k not in latest or n["published_at"] > latest[k]["published_at"]):
+                latest[k] = n
+        with_notes = sorted(latest.values(), key=lambda n: n["published_at"], reverse=True)
+        st.markdown("".join(card(n, mine) for n in with_notes), unsafe_allow_html=True)
+        without = [r["name"] for r in roster if r["name_key"] not in latest]
+        if without:
+            st.caption("No notes found yet: " + ", ".join(sorted(without)))

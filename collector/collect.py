@@ -44,6 +44,7 @@ CBS_PAGE_1 = "https://www.cbssports.com/fantasy/hockey/players/news/all/"
 CBS_PAGE_N = "https://www.cbssports.com/fantasy/hockey/players/news/all/both/content/xhr/?page={n}"
 DF_NEWS = "https://www.dailyfaceoff.com/hockey-player-news"
 DF_GOALIES = "https://www.dailyfaceoff.com/starting-goalies/{date}"
+DF_PLAYER_NEWS = "https://www.dailyfaceoff.com/players/news/{slug}/{pid}"
 DF_LINES = "https://www.dailyfaceoff.com/teams/{slug}/line-combinations"
 NHL_STANDINGS = "https://api-web.nhle.com/v1/standings/now"
 NHL_ROSTER = "https://api-web.nhle.com/v1/roster/{team}/current"
@@ -297,6 +298,7 @@ def fetch_lines() -> list[dict]:
             "name": p["name"], "pos": p.get("positionIdentifier"), "group": p.get("groupIdentifier"),
             "group_name": p.get("groupName"), "category": p.get("categoryIdentifier"),
             "injury": p.get("injuryStatus"), "gtd": p.get("gameTimeDecision"),
+            "df_id": p.get("playerId"), "df_slug": p.get("playerSlug"),
         } for p in c.get("players", [])]
         rows.append({
             "team_abbrev": c.get("teamAbbreviation"), "team_name": c.get("teamName"),
@@ -475,7 +477,50 @@ def job_espn(store: Store):
     print(f"espn roster: {len(rows)} players")
 
 
-JOBS = {"players": job_players, "espn": job_espn, "lines": job_lines, "goalies": job_goalies, "news": job_news}
+def job_roster_notes(store: Store):
+    """Latest note for every player on your roster, however old, from Daily Faceoff's
+    player pages. Kept one row per player, so it never grows. Players are matched to
+    Daily Faceoff through the line-combination data (run `lines` first)."""
+    roster = store.select("my_roster")
+    df_ids = {}
+    for team in store.select("line_combos"):
+        for p in team["players"]:
+            if p.get("df_id") and p.get("df_slug"):
+                df_ids[norm(p["name"])] = (p["df_slug"], p["df_id"])
+    index = {p["name_key"]: p for p in store.select("nhl_players")}
+    rows, missing = [], []
+    for r in roster:
+        ids = df_ids.get(r["name_key"])
+        if not ids:
+            missing.append(r["name"])
+            continue
+        try:
+            page = next_data(get(DF_PLAYER_NEWS.format(slug=ids[0], pid=ids[1])).text)
+            notes = (page.get("data") or {}).get("data") or []
+        except Exception as e:
+            print(f"roster note for {r['name']} failed: {e}", file=sys.stderr)
+            continue
+        if not notes:
+            continue
+        x = notes[0]  # newest first
+        p = index.get(r["name_key"]) or {}
+        headline = (x.get("details") or "").strip()
+        rows.append({
+            "id": item_id(r["name"], headline), "name_key": r["name_key"], "player_name": r["name"],
+            "headline": headline, "news": (x.get("fantasyDetails") or "").strip(), "analysis": "",
+            "source": "Daily Faceoff" + (f" via {x['sourceName']}" if x.get("sourceName") else ""),
+            "url": x.get("sourceUrl") or DF_PLAYER_NEWS.format(slug=ids[0], pid=ids[1]),
+            "published_at": x.get("createdAt"), "time_exact": True,
+            "team": p.get("team") or x.get("teamAbbreviation"), "position": p.get("position"),
+            "headshot": p.get("headshot") or x.get("playerHeadshotUrl"),
+            "category": DF_CATEGORIES.get(x.get("newsCategoryName") or "") or categorize(headline, p.get("position")),
+        })
+    store.upsert("roster_notes", rows, "name_key", replace_all=True)
+    print(f"roster notes: {len(rows)} players" + (f"; not on Daily Faceoff lines: {', '.join(missing)}" if missing else ""))
+
+
+JOBS = {"players": job_players, "espn": job_espn, "lines": job_lines, "roster_notes": job_roster_notes,
+        "goalies": job_goalies, "news": job_news}
 
 
 def main():

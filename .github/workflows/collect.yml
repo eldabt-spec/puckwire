@@ -34,8 +34,8 @@ jobs:
             git archive FETCH_HEAD | tar -x -C data
           fi
 
-      - name: Collect roster, lines and player index
-        run: python collector/collect.py players lines espn
+      - name: Collect roster, latest note per rostered player, lines and player index
+        run: python collector/collect.py players lines espn roster_notes
         env:
           DATA_DIR: data
           ESPN_LEAGUE_ID: ${{ secrets.ESPN_LEAGUE_ID }}
